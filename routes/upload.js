@@ -1,344 +1,357 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
+const mongoose = require("mongoose");
 
 const auth = require("../middleware/authMiddleware");
 const User = require("../models/User");
 const File = require("../models/File");
-const mongoose = require("mongoose");
 
-/* STORAGE CONFIG */
+/* ================= CLOUDINARY SETUP ================= */
 
-const storage = multer.diskStorage({
-destination: function (req, file, cb) {
-cb(null, path.join(__dirname, "../uploads"));
-},
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
-filename: function (req, file, cb) {
-
-/* remove apostrophe from filename */
-const cleanName = file.originalname.replace(/'/g,"");
-
-cb(null, Date.now() + "-" + cleanName);
-
-}
-
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.API_KEY,
+  api_secret: process.env.API_SECRET
 });
 
-const upload = multer({ storage: storage });
+/* ================= MULTER STORAGE ================= */
 
-/* UPLOAD FILE */
-
-router.post("/upload", auth, upload.single("file"), async (req,res)=>{
-
-try{
-
-if(!req.file){
-return res.status(400).json({error:"No file uploaded"});
-}
-
-const newFile = new File({
-name:req.file.filename,
-size:req.file.size,   // correct size in bytes
-path:req.file.path,
-owner:req.user.userId
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "fileshare",
+    resource_type: "auto"
+  }
 });
 
-await newFile.save();
+const upload = multer({ storage });
 
-res.json({
-message:"File uploaded successfully",
-file:req.file.filename
-});
+/* ================= UPLOAD FILE ================= */
 
-}catch(err){
+router.post("/upload", auth, upload.single("file"), async (req, res) => {
+  try {
 
-res.status(500).json({error:err.message});
-
-}
-
-});
-
-/* GET FILES (OWN + SHARED) */
-
-router.get("/files", auth, async (req,res)=>{
-
-const userId = req.user.userId;
-
-const myFiles = await File.find({
-owner: userId,
-deletedFor: { $ne: userId }
-})
-.populate("owner", "name email")
-.populate("sharedWith", "name email");
-
-const sharedFiles = await File.find({
-sharedWith: userId,
-deletedFor: { $ne: userId }
-})
-.populate("owner", "name email")
-.populate("sharedWith", "name email");
-
-res.json({ myFiles, sharedFiles });
-
-});
-
-/* DELETE PERMANENT (FIXED) */
-
-router.delete("/delete-permanent/:filename", auth, async (req,res)=>{
-
-const filename = decodeURIComponent(req.params.filename);
-const userId = req.user.userId;
-
-const file = await File.findOne({ name: filename });
-
-if(file.owner.equals(userId)){
-    
-    const filePath = path.join(__dirname,"../uploads",filename);
-
-    if(fs.existsSync(filePath)){
-        fs.unlinkSync(filePath);
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
     }
 
-    await File.deleteOne({ name: filename });
+    const newFile = new File({
+      name: req.file.originalname,
+      size: req.file.bytes,
+      path: req.file.path, // 🔥 Cloudinary URL
+      owner: req.user.userId
+    });
 
-    return res.json({message:"Deleted permanently (owner)"});
+    await newFile.save();
 
-}else{
+    res.json({
+      message: "File uploaded successfully",
+      file: newFile
+    });
 
-    file.deletedFor = file.deletedFor.filter(
-        id => id.toString() !== userId   // 🔥 FIX
+  } catch (err) {
+    console.error("UPLOAD ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= GET FILES ================= */
+
+router.get("/files", auth, async (req, res) => {
+  try {
+
+    const userId = req.user.userId;
+
+    const myFiles = await File.find({
+      owner: userId,
+      deletedFor: { $ne: userId }
+    })
+    .populate("owner", "name email")
+    .populate("sharedWith", "name email");
+
+    const sharedFiles = await File.find({
+      sharedWith: userId,
+      deletedFor: { $ne: userId }
+    })
+    .populate("owner", "name email")
+    .populate("sharedWith", "name email");
+
+    res.json({ myFiles, sharedFiles });
+
+  } catch (err) {
+    console.error("FILES ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= DELETE PERMANENT ================= */
+
+router.delete("/delete-permanent/:filename", auth, async (req, res) => {
+  try {
+
+    const filename = decodeURIComponent(req.params.filename);
+    const userId = req.user.userId;
+
+    const file = await File.findOne({ name: filename });
+
+    if (!file) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    if (file.owner.equals(userId)) {
+
+      await File.deleteOne({ name: filename });
+
+      return res.json({ message: "Deleted permanently (owner)" });
+
+    } else {
+
+      file.deletedFor = file.deletedFor.filter(
+        id => id.toString() !== userId
+      );
+
+      file.sharedWith = file.sharedWith.filter(
+        id => id.toString() !== userId
+      );
+
+      await file.save();
+
+      return res.json({ message: "Deleted permanently (only for you)" });
+    }
+
+  } catch (err) {
+    console.error("DELETE PERMANENT ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= VIEW FILE ================= */
+
+router.get("/view/:filename", async (req, res) => {
+  try {
+
+    const filename = decodeURIComponent(req.params.filename);
+
+    const file = await File.findOne({ name: filename });
+
+    if (!file) {
+      return res.status(404).send("File not found");
+    }
+
+    res.redirect(file.path); // 🔥 Cloudinary URL redirect
+
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+/* ================= DOWNLOAD FILE ================= */
+
+router.get("/download/:filename", async (req, res) => {
+  try {
+
+    const file = await File.findOne({ name: req.params.filename });
+
+    if (!file) {
+      return res.status(404).send("File not found");
+    }
+
+    res.redirect(file.path);
+
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+/* ================= DELETE FILE ================= */
+
+router.delete("/delete/:filename", auth, async (req, res) => {
+  try {
+
+    const filename = decodeURIComponent(req.params.filename);
+
+    await File.updateOne(
+      { name: filename },
+      {
+        $addToSet: {
+          deletedFor: new mongoose.Types.ObjectId(req.user.userId)
+        }
+      }
     );
 
-    file.sharedWith = file.sharedWith.filter(
-        id => id.toString() !== userId
+    res.json({ message: "Moved to trash" });
+
+  } catch (err) {
+    console.error("DELETE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TRASH ================= */
+
+router.get("/trash", auth, async (req, res) => {
+  try {
+
+    const userId = req.user.userId;
+
+    const files = await File.find()
+      .populate("owner", "name email")
+      .populate("sharedWith", "name email");
+
+    const trashFiles = files.filter(file =>
+      file.deletedFor &&
+      file.deletedFor.some(id => id.toString() === userId)
+    );
+
+    res.json(trashFiles);
+
+  } catch (err) {
+    console.error("TRASH ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= RESTORE ================= */
+
+router.post("/restore", auth, async (req, res) => {
+  try {
+
+    const { fileName } = req.body;
+    const userId = req.user.userId;
+
+    const file = await File.findOne({ name: fileName });
+
+    file.deletedFor = file.deletedFor.filter(
+      id => id.toString() !== userId
     );
 
     await file.save();
 
-    return res.json({message:"Deleted permanently (only for you)"});
-}
-});
-/* FILE PREVIEW */
+    res.json({ message: "Restored" });
 
-router.get("/view/:filename",(req,res)=>{
-
-const filename = decodeURIComponent(req.params.filename);
-
-const filePath = path.join(__dirname,"../uploads",filename);
-
-res.sendFile(filePath);
-
-});
-/* FILE DOWNLOAD */
-
-router.get("/download/:filename", (req,res)=>{
-
-const filePath = path.join(__dirname,"../uploads",req.params.filename);
-
-res.download(filePath);
-
-});
-
-
-
-/* DELETE FILE */
-
-router.delete("/delete/:filename", auth, async (req,res)=>{
-
-try{
-
-const filename = decodeURIComponent(req.params.filename);
-
-console.log("DELETE HIT:", filename);
-
-await File.updateOne(
-  { name: filename },
-  {
-    $addToSet: {
-      deletedFor: new mongoose.Types.ObjectId(req.user.userId)
-    }
+  } catch (err) {
+    console.error("RESTORE ERROR:", err);
+    res.status(500).json({ error: err.message });
   }
-);
-
-res.json({ message: "Moved to trash" });
-
-}catch(err){
-console.error(err);
-res.status(500).json({error:err.message});
-}
-
 });
 
+/* ================= RENAME ================= */
 
+router.post("/rename", auth, async (req, res) => {
+  try {
 
-router.get("/trash", auth, async (req,res)=>{
+    const oldName = req.body.oldName;
+    const newName = req.body.newName;
 
-const userId = req.user.userId;
+    await File.updateOne(
+      { name: oldName },
+      { $set: { name: newName } }
+    );
 
-const files = await File.find()
-.populate("owner", "name email")
-.populate("sharedWith", "name email");
+    res.json({ message: "File renamed successfully" });
 
-const trashFiles = files.filter(file =>
-file.deletedFor && file.deletedFor.some(id => id.toString() === userId)
-);
-
-res.json(trashFiles);
-
+  } catch (err) {
+    console.error("RENAME ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
+/* ================= SHARE ================= */
 
-/* RESTORE (FIXED) */
+router.post("/share", auth, async (req, res) => {
+  try {
 
-router.post("/restore", auth, async (req,res)=>{
+    const { fileName, email } = req.body;
 
-const { fileName } = req.body;
-const userId = req.user.userId;
+    const user = await User.findOne({ email });
 
-const file = await File.findOne({ name: fileName });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-file.deletedFor = file.deletedFor.filter(
-id => id.toString() !== userId   // 🔥 FIX
-);
+    const file = await File.findOne({
+      name: fileName,
+      owner: req.user.userId
+    });
 
-await file.save();
+    if (!file) {
+      return res.status(404).json({ error: "File not found" });
+    }
 
-res.json({message:"Restored"});
+    if (!file.sharedWith.includes(user._id)) {
+      file.sharedWith.push(user._id);
+      await file.save();
+    }
 
+    res.json({ message: "File shared successfully" });
+
+  } catch (err) {
+    console.error("SHARE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-/* RENAME FILE */
+/* ================= PUBLIC LINK ================= */
 
-router.post("/rename", auth, async (req,res)=>{
+router.post("/public-link", auth, async (req, res) => {
+  try {
 
-const oldName = decodeURIComponent(req.body.oldName);
-const newName = decodeURIComponent(req.body.newName);
+    const { fileName } = req.body;
 
-const oldPath = path.join(__dirname,"../uploads",oldName);
-const newPath = path.join(__dirname,"../uploads",newName);
+    const file = await File.findOne({
+      name: fileName,
+      owner: req.user.userId
+    });
 
-fs.renameSync(oldPath,newPath);
+    if (!file) {
+      return res.status(404).json({ error: "File not found" });
+    }
 
-await File.updateOne(
-{ name:oldName },
-{ $set:{ name:newName } }
-);
+    if (!file.publicLink) {
+      const crypto = require("crypto");
+      file.publicLink = crypto.randomBytes(16).toString("hex");
+      await file.save();
+    }
 
-res.json({message:"File renamed successfully"});
+    res.json({
+      link: file.path // 🔥 direct cloudinary link
+    });
 
-});
-/* SHARE FILE */
-
-router.post("/share", auth, async (req,res)=>{
-
-try{
-
-const {fileName,email} = req.body;
-
-const user = await User.findOne({email});
-
-if(!user){
-return res.status(404).json({error:"User not found"});
-}
-
-const file = await File.findOne({
-name:fileName,
-owner:req.user.userId
+  } catch (err) {
+    console.error("PUBLIC LINK ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-if(!file){
-return res.status(404).json({error:"File not found"});
-}
+/* ================= STORAGE ================= */
 
-if(file.sharedWith.includes(user._id)){
-return res.json({message:"Already shared"});
-}
+router.get("/storage", auth, async (req, res) => {
+  try {
 
-file.sharedWith.push(user._id);
+    const files = await File.find({ owner: req.user.userId });
 
-await file.save();
+    let totalBytes = 0;
 
-res.json({message:"File shared successfully"});
+    files.forEach(file => {
+      totalBytes += file.size;
+    });
 
-}catch(err){
+    const usedMB = totalBytes / (1024 * 1024);
+    const maxMB = 100;
 
-res.status(500).json({error:err.message});
+    res.json({
+      used: usedMB.toFixed(2),
+      percent: ((usedMB / maxMB) * 100).toFixed(2)
+    });
 
-}
-
+  } catch (err) {
+    console.error("STORAGE ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-router.post("/public-link", auth, async (req,res)=>{
-
-const {fileName} = req.body;
-
-const file = await File.findOne({
-name:fileName,
-owner:req.user.userId
-});
-
-if(!file){
-return res.status(404).json({error:"File not found"});
-}
-
-if(!file.publicLink){
-
-const crypto = require("crypto");
-
-file.publicLink = crypto.randomBytes(16).toString("hex");
-
-await file.save();
-
-}
-
-res.json({
-link:`http://localhost:5000/api/public/${file.publicLink}`
-});
-
-});
-
-/* STORAGE USAGE */
-
-router.get("/storage", auth, async (req,res)=>{
-
-const files = await File.find({owner:req.user.userId});
-
-let totalBytes = 0;
-
-files.forEach(file=>{
-totalBytes += file.size;
-});
-
-/* convert bytes → MB */
-const usedMB = totalBytes / (1024 * 1024);
-
-const maxMB = 100; // storage limit
-
-const percent = (usedMB / maxMB) * 100;
-
-res.json({
-used: usedMB.toFixed(2),
-percent: percent.toFixed(2)
-});
-
-});
-
-router.get("/public/:id", async (req,res)=>{
-
-const file = await File.findOne({
-publicLink:req.params.id
-});
-
-if(!file){
-return res.status(404).send("File not found");
-}
-
-const filePath = path.join(__dirname,"../uploads",file.name);
-
-res.sendFile(filePath);
-
-});
 module.exports = router;

@@ -32,32 +32,35 @@ const upload = multer({ storage });
 
 /* ================= UPLOAD FILE ================= */
 
-router.post("/upload", auth, upload.single("file"), async (req, res) => {
-  try {
+router.post("/upload", auth, upload.single("file"), async (req,res)=>{
+try{
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
+if(!req.file){
+return res.status(400).json({error:"No file uploaded"});
+}
 
-  const newFile = new File({
-    name: req.file.originalname,
-    size: req.file.size,
-    url: result.secure_url,
-    owner: req.user.userId
+// 🔥 Cloudinary file data
+const fileUrl = req.file.path;       // <-- THIS
+const fileName = req.file.originalname;
+const fileSize = req.file.size;
+
+const newFile = new File({
+name: fileName,
+size: fileSize,
+url: fileUrl,
+owner: req.user.userId
 });
 
+await newFile.save();
 
-    await newFile.save();
+res.json({
+message:"File uploaded successfully"
+});
 
-    res.json({
-      message: "File uploaded successfully",
-      file: newFile
-    });
-
-  } catch (err) {
-    console.error("UPLOAD ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
+}catch(err){
+console.error("UPLOAD ERROR:", err);
+res.status(500).json({error:err.message});
+}
 });
 
 /* ================= GET FILES ================= */

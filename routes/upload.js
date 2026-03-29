@@ -39,12 +39,12 @@ router.post("/upload", auth, upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const newFile = new File({
-      name: req.file.originalname,
-      size: req.file.bytes,
-      path: req.file.path, // 🔥 Cloudinary URL
-      owner: req.user.userId
-    });
+   const newFile = new File({
+  name: req.file.filename,
+  size: req.file.size,
+  path: req.file.path,
+  owner: req.user.userId
+});
 
     await newFile.save();
 
